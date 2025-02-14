@@ -1,8 +1,6 @@
 import numpy as np
 import random
 
-# Global constant (analogous to Julia's `const N = 10`)
-N = 10
 
 def find_all_triangles(adjmat):
     """
@@ -30,7 +28,22 @@ def convert_adjmat_to_string(adjmat):
             entries.append(str(adjmat[i, j]))
     return "".join(entries)
 
-def greedy_search_from_startpoint(db, obj):
+def string_to_adjmat(obj, N):
+    # Create an empty adjacency matrix
+    adjmat = np.zeros((N, N), dtype=int)
+    
+    # Fill the upper triangular matrix from the input string `obj`
+    index = 0
+    for i in range(N - 1):
+        for j in range(i + 1, N):
+            # Convert the current character to an integer (0 or 1)
+            value = int(obj[index])
+            adjmat[i, j] = value
+            adjmat[j, i] = value  # Ensure the matrix is symmetric
+            index += 1
+    return adjmat
+
+def greedy_search_from_startpoint(db, obj, N):
     """
     Main greedy search algorithm.
     Input:
@@ -114,14 +127,18 @@ def greedy_search_from_startpoint(db, obj):
 
     return convert_adjmat_to_string(adjmat)
 
-def reward_calc(obj):
+def reward_calc(obj, N):
     """
     Calculates the reward of a construction.
     For example, counts the number of edges (i.e. '1's) in the string representation.
     """
-    return obj.count('1')
+    ## differs from paper, there it is num of edges - 2 * num of triangles
+    #return obj.count('1')
+    edges = obj.count('1')
+    triangles = len(find_all_triangles(string_to_adjmat(obj, N)))
+    return edges - 2 * triangles
 
-def empty_starting_point():
+def empty_starting_point(N):
     """
     Returns an empty starting point as a string.
     The string consists of "0" repeated for every possible upper-triangle entry.
