@@ -1,6 +1,8 @@
 wandb/
 results/
 data/
+logs/
+out/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -125,3 +127,4 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+__pycache__/makemoretokens.cpython-310.pyc
