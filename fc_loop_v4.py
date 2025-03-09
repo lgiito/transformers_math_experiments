@@ -29,19 +29,22 @@ import pickle
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 # Set device
-device = "cuda:3" if torch.cuda.is_available() else "cpu"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
 # Constants
 N = 20
 GEN_NUM = 5
+BATCH_SIZE = 32
 GEN_BATCH_SIZE = 10000
+MAX_STEPS = 15000
 VOCAB_SIZE = 100
-BLOCK_SIZE = 42
+BLOCK_SIZE = 50
 N_LAYER = 2
 N_HEAD = 4
 N_EMBD = 16
-N_EMBD2 = 32
+
 
 # Load the best dataset
 print("Loading the best dataset...")
@@ -57,9 +60,9 @@ trainer = BpeTrainer(vocab_size=VOCAB_SIZE)
 raw_tokenizer.train_from_iterator(best_dataset['text'][:5000], trainer=trainer)
 
 # Save the tokenizer to disk for reuse
-tokenizer_path = "data/tokenizer_N20_samples10000"
-os.makedirs(tokenizer_path, exist_ok=True)
-raw_tokenizer.save(f"{tokenizer_path}/tokenizer.json")
+# tokenizer_path = "data/tokenizer_N20_samples5000"
+# os.makedirs(tokenizer_path, exist_ok=True)
+# raw_tokenizer.save(f"{tokenizer_path}/tokenizer.json")
 
 # Create a HF wrapper for the tokenizer
 tokenizer = PreTrainedTokenizerFast(
@@ -85,7 +88,10 @@ for gen_idx in range(1, GEN_NUM):
     text_data = samples[gen_idx - 1]
     
     def tokenize_function(examples):
-        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=BLOCK_SIZE)
+        return tokenizer(examples["text"], 
+                         padding=True, 
+                         truncation=True,
+                         max_length=BLOCK_SIZE)
     
     # Create HF Dataset for the current generation
     current_gen_dataset = Dataset.from_dict({"text": text_data})
@@ -104,6 +110,7 @@ for gen_idx in range(1, GEN_NUM):
     print("Training the model using HF Trainer...")
     
     # Define model configuration (GPT-2 based)
+
     config = GPT2Config(
         vocab_size=len(tokenizer),
         n_positions=BLOCK_SIZE,
@@ -115,7 +122,13 @@ for gen_idx in range(1, GEN_NUM):
     )
     
     # Initialize model
-    model = GPT2LMHeadModel(config)
+    model_path = f"./results/model_generation_{gen_idx - 1}"
+    if os.path.exists(model_path):
+        print(f"Loading model from {model_path}...")
+        model = GPT2LMHeadModel.from_pretrained(model_path)
+    else:
+        print("No pre-trained model found, initializing new model...")
+        model = GPT2LMHeadModel(config)
     model.to(device)
     print(f"Model moved to {device}")
     
@@ -123,16 +136,17 @@ for gen_idx in range(1, GEN_NUM):
     training_args = TrainingArguments(
         output_dir=f"./results/generation_{gen_idx}",
         overwrite_output_dir=True,
-        num_train_epochs=3,
-        per_device_train_batch_size=32,
-        per_device_eval_batch_size=32,
+        max_steps=MAX_STEPS,
+        per_device_train_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=BATCH_SIZE,
+        learning_rate=5e-4,
+        lr_scheduler_type="constant",
+        eval_strategy="steps",
+        save_strategy="no",
         eval_steps=500,
-        save_steps=500,
-        warmup_steps=500,
         logging_dir=f"./logs/generation_{gen_idx}",
         logging_steps=100,
-        evaluation_strategy="steps",
-        load_best_model_at_end=True,
+        report_to="tensorboard"
     )
     
     # Data collator for language modeling
@@ -170,35 +184,36 @@ for gen_idx in range(1, GEN_NUM):
     decoded_samples = []
     
     # Generate in batches to manage memory
-    batch_size = 50  # Smaller batch size for generation
-    num_batches = (40000 + batch_size - 1) // batch_size
+
+    desired_samples = 40000
     
-    for i in tqdm(range(num_batches)):
-        try:
-            outputs = generator(
-                [tokenizer.bos_token] * batch_size,
-                max_length=190,
-                do_sample=True,
-                temperature=1.0,
-                num_return_sequences=1,
-                pad_token_id=tokenizer.eos_token_id
-            )
-            
-            # Process generated texts
-            for output in outputs:
-                text = output[0]['generated_text']
-                # Remove special tokens and extra spaces
-                text = text.replace(tokenizer.bos_token, "").replace(tokenizer.eos_token, "").strip()
-                if len(text) >= 190:
-                    decoded_samples.append(text[:190])
-            
-            # Clear cache
-            torch.cuda.empty_cache()
-        except RuntimeError as e:
-            print(f"Runtime error during generation: {e}")
-            print("Reducing batch size and continuing...")
-            batch_size = max(1, batch_size // 2)
-    
+    while len(decoded_samples) < desired_samples:
+
+        outputs = generator(
+            [tokenizer.bos_token],
+            max_length=BLOCK_SIZE,
+            do_sample=True,
+            temperature=1.0,
+            num_return_sequences=GEN_BATCH_SIZE,
+            pad_token_id=tokenizer.eos_token_id,
+            truncation=True
+        )
+
+        for output in outputs[0]:
+            text = output['generated_text']
+            # Remove special tokens and extra spaces
+            text = text.replace(tokenizer.bos_token, "").replace(" ", "")
+            if len(text) >= 190:
+                decoded_samples.append(text[:190])
+                # Stop processing if we've reached our target
+                if len(decoded_samples) >= desired_samples:
+                    break
+
+        torch.cuda.empty_cache()
+
+
+    # In case you collected a few extra samples, trim the list to exactly 40000.
+    decoded_samples = decoded_samples[:desired_samples]
     print(f"Generated {len(decoded_samples)} samples.")
     
     # 4. Compute new generation and rewards using multiprocessing
@@ -221,6 +236,12 @@ for gen_idx in range(1, GEN_NUM):
         rewards_parallel = list(tqdm(pool.imap_unordered(process_reward, tasks2),
                                     total=len(tasks2)))
     
+    generation_dataset = Dataset.from_dict({
+        "text": new_generation,
+        "reward": rewards_parallel
+    })
+
+    generation_dataset.save_to_disk(f"data/dataset_N20_samples40000_generation{gen_idx}")
     # Combine the samples and rewards
     combined = list(zip(new_generation, rewards_parallel))
     
@@ -235,20 +256,13 @@ for gen_idx in range(1, GEN_NUM):
     
     samples[gen_idx] = new_samples
     rewards[gen_idx] = new_rewards
-    
-    # Create and save dataset for this generation
-    generation_dataset = Dataset.from_dict({
-        "text": new_samples,
-        "reward": new_rewards
-    })
-    
-    generation_dataset.save_to_disk(f"data/dataset_N20_samples10000_generation{gen_idx}")
+
 
 # Save final results
 print("Saving final results...")
-with open("samples_final.pkl", "wb") as f:
+with open("data/samples_final.pkl", "wb") as f:
     pickle.dump(samples, f)
-with open("rewards_final.pkl", "wb") as f:
+with open("data/rewards_final.pkl", "wb") as f:
     pickle.dump(rewards, f)
 
 print("Process completed successfully!")

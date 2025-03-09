@@ -7,15 +7,15 @@ args=(
    "best_dataset_tokenized.txt"
    
    --max-steps
-   510
+   15000
 
    --n-layer
    2
 
    --device
-    "cuda:3"
+    "cuda:2"
 
    --resume
 )
 
-python3 makemoretokens.py "${args[@]}"
+python3 makemoretokens_with_block_size.py "${args[@]}"

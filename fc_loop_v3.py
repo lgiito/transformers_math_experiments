@@ -23,14 +23,14 @@ from multiprocessing import Pool
 from tokenizers.trainers import BpeTrainer
 from tokenizers import Tokenizer
 from tokenizers.pre_tokenizers import Whitespace
-from makemoretokens import generate, Transformer, ModelConfig
+from makemoretokens_with_block_size import generate, Transformer, ModelConfig
 import subprocess
 import pickle
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 # Set device
-device = "cuda:3" if torch.cuda.is_available() else "cpu"
+device = "cuda:2" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
 # Load the best dataset
@@ -59,7 +59,7 @@ rewards[0] = best_dataset['reward']
 
 # Initialize the model
 print("Initializing the model...")
-config = ModelConfig(vocab_size=101, block_size=42,
+config = ModelConfig(vocab_size=101, block_size=50,
                        n_layer=2, n_head=4,
                        n_embd=16, n_embd2=32)
 model = Transformer(config)
@@ -83,7 +83,10 @@ for gen_idx in range(1, gen_num):
     
     # 2. Train the model using script
     print("Training the model using script...")
-    subprocess.run(["bash", "run_args.sh"], check=True)
+    if gen_idx == 1:
+        subprocess.run(["bash", "first_run_args.sh"], check=True)
+    else:
+        subprocess.run(["bash", "run_args.sh"], check=True)
     
     # 3. Generate from model (in batches and do not forget to empty cache)
 
@@ -170,9 +173,9 @@ for gen_idx in range(1, gen_num):
 
 # Save final results
 print("Saving final results...")
-with open("samples_final.pkl", "wb") as f:
+with open("data/samples_final_mm.pkl", "wb") as f:
     pickle.dump(samples, f)
-with open("rewards_final.pkl", "wb") as f:
+with open("data/rewards_final_mm.pkl", "wb") as f:
     pickle.dump(rewards, f)
 
 print("Process completed successfully!")
